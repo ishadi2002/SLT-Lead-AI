@@ -291,18 +291,21 @@ def get_rows(ws, category):
 
         feedback = find_feedback_column(original, category)
 
-        if category == "education":
-            extra = first(
-                original,
-                ["2nd Call Remarks", "2nd call round", "2nd Call Status", "1st Call Status", "Remarks"]
-            )
-            call = first(
-                original,
-                ["Call Status", "1st Call Status", "Not Answered", "Status"]
-            )
-        else:
-            extra = ""
-            call = ""
+        extra = first(
+            original,
+            [
+                "2nd Call Remarks", "2nd call round", "2nd Call Status",
+                "1st Call Status", "Remarks", "Call Remarks",
+                "Customer Remarks", "Comments", "Notes", "Follow Up Remarks"
+            ]
+        )
+        call = first(
+            original,
+            [
+                "Call Status", "1st Call Status", "2nd Call Status",
+                "Call Outcome", "Not Answered", "Status", "Lead Status"
+            ]
+        )
 
         created_at = first(original, ["created_time", "created_at", "date", "timestamp"])
 
@@ -570,17 +573,6 @@ async def analyze_file(
         "excluded_rows": result["excluded_rows"],
         "warnings": result["warnings"],
         "rows": [
-            {
-                "sheet": record["sheet"],
-                "row": record["row"],
-                "score": record["score"],
-                "name": record["name"],
-                "phone": record["phone"],
-                "reason": record["reason"],
-                "original": record["original"]
-            }
-            for record in record_item if True # Fallback for safety
-        ] if False else [
             {
                 "sheet": record["sheet"],
                 "row": record["row"],

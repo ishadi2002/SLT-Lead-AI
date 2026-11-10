@@ -2,7 +2,6 @@
 
 import re
 from datetime import datetime, timezone
-import pandas as pd
 
 NEGATIVE = (
     r'\b(?:not\s+(?:interested|required|needed|willing|looking)'
@@ -43,64 +42,6 @@ def is_iso_date_or_slug(val):
     return False
 
 
-def extract_dynamic_fields(row):
-    """
-    Dynamically extracts customer name, email, phone, and city from a row
-    regardless of index shifts or raw Google Form column changes.
-    """
-    row_dict = {str(k).strip(): (v if pd.notna(v) else '') for k, v in row.items()}
-    
-    name = ''
-    email = ''
-    phone = ''
-    city = ''
-    
-    # 1. Identify Email
-    for k, v in row_dict.items():
-        if 'email' in k.lower() and str(v).strip():
-            email = str(v).strip()
-            break
-
-    # 2. Identify Phone Number
-    for k, v in row_dict.items():
-        if ('phone' in k.lower() or 'mobile' in k.lower() or 'contact' in k.lower()) and str(v).strip():
-            phone = str(v).strip()
-            break
-
-    # 3. Identify Full Name (Validating against timestamps & course slugs)
-    for k, v in row_dict.items():
-        k_lower = k.lower()
-        if ('full_name' in k_lower or 'student' in k_lower or 'customer name' in k_lower or 'name' in k_lower) and 'course' not in k_lower:
-            val_str = str(v).strip()
-            if not is_iso_date_or_slug(val_str):
-                name = val_str
-                break
-
-    # 4. Fallback search across row values if Name is shifted into another column
-    if not name:
-        for k, v in row_dict.items():
-            val_str = str(v).strip()
-            # If value looks like a real human name (2+ words, no '@', no phone digits, not slug/date)
-            if (
-                val_str 
-                and not is_iso_date_or_slug(val_str)
-                and '@' not in val_str 
-                and not re.search(r'\d{5,}', val_str) 
-                and len(val_str.split()) >= 2
-                and 'sent' not in val_str.lower()
-                and 'call' not in val_str.lower()
-            ):
-                name = val_str
-                break
-
-    return {
-        'name': name if name else 'N/A',
-        'email': email,
-        'phone': phone,
-        'city': city
-    }
-
-
 def evaluate(
     category,
     feedback,
@@ -112,11 +53,12 @@ def evaluate(
 ):
     fb = str(feedback or '').strip()
     extra = str(extra or '').strip()
+    call = str(call_status or '').strip()
     p_level = str(potential_level or '').strip().upper()
     p_course = str(potential_course or '').strip()
 
     text = ' | '.join(
-        value for value in (fb, extra, p_course) if value
+        value for value in (fb, extra, call, p_course) if value
     ).lower()
 
     if not text and not p_level:
@@ -173,10 +115,13 @@ def evaluate(
 
     # BUSINESS / BROADBAND SCORING
     elif category in ['business', 'broadband']:
-        if hit(text, r'\b(?:application\s+(?:submitted|collected)|order\s+(?:placed|confirmed)|payment\s+collected)\b'):
+        if hit(text, r'\b(?:payment\s+(?:collected|received|made)|paid|deposit\s+(?:collected|paid|received)|advance\s+(?:collected|paid|received)|(?:\d+(?:,\d+)?\s*(?:/=|rs\.?|lkr))\s*(?:collected|paid|received))\b'):
+            score += 90
+            reason = 'Payment/Deposit collected'
+        elif hit(text, r'\b(?:applied(?:\s+for)?|application\b.*?\b(?:submitted|collected)|order\s+(?:placed|confirmed))\b'):
             score += 90
             reason = 'Order/Application submitted'
-        elif hit(text, r'\b(?:fiber|ftth|connection\s+requested|visit\s+arranged)\b'):
+        elif hit(text, r'\b(?:fiber|fibre|ftth|ffth|fth|fttb|fttc|fttx|connection\s+requested|visit\s+arranged)\b'):
             score += 50
             reason = 'Specific connection request / Meeting arranged'
 
