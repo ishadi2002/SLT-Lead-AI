@@ -330,7 +330,8 @@ def get_rows(ws, category):
             call,
             created_at,
             potential_level=potential_level,
-            potential_course=potential_course
+            potential_course=potential_course,
+            sheet_name=ws.title
         )
 
         key = re.sub(r"\D", "", phone) or email.lower()
@@ -580,6 +581,7 @@ async def analyze_file(
                 "name": record["name"],
                 "phone": record["phone"],
                 "reason": record["reason"],
+                "disposition": record["disposition"],
                 "original": record["original"]
             }
             for record in result["records"]
