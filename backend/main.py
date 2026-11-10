@@ -45,6 +45,7 @@ RESULTS = {}
 
 
 def norm(value):
+    """Normalize strings to clean snake_case for comparison."""
     return re.sub(
         r"[^a-z0-9]+", "_",
         str(value or "").lower()
@@ -52,6 +53,7 @@ def norm(value):
 
 
 def as_text(value):
+    """Convert Excel cell values safely to cleaned text."""
     if value is None:
         return ""
 
@@ -62,62 +64,81 @@ def as_text(value):
 
 
 def first(record, names):
+    """Locate the first populated value matching given alias column names."""
     for name in names:
+        target_norm = norm(name)
         for key, value in record.items():
-            if norm(key) == norm(name) and as_text(value):
-                return as_text(value)
+            if norm(key) == target_norm:
+                txt = as_text(value)
+                if txt:
+                    return txt
     return ""
 
 
 def scan_header(rows):
-    # Header may start on the first or second row.
+    """Scan first 20 rows to find header row index cleanly."""
     for rownum, row in enumerate(rows[:20], 1):
-        cells = [norm(value) for value in row[:60]]
+        cells = [norm(value) for value in row[:60] if value is not None]
+
+        # Ignore rows containing pure date values
+        has_date_headers = any(re.search(r'\d{1,2}(?:st|nd|rd|th)?_\w+_\d{4}', c) for c in cells if c)
+        if has_date_headers:
+            continue
 
         if "full_name" in cells or "student_name" in cells or "customer_name" in cells or (
-            any("name" in c for c in cells) and ("email" in cells or "phone_number" in cells or "phone" in cells)
+            any("name" in c for c in cells) and (
+                "email" in cells or "phone_number" in cells or "phone" in cells or "mobile" in cells or "contact" in cells
+            )
         ):
             return rownum
 
-    raise ValueError(
-        "No valid name/email/phone header found in first 20 rows"
-    )
+    return 1
 
 
 def is_real_name(value):
+    """Strictly validate if extracted value is a real person/customer name."""
     name = as_text(value).strip()
 
     if not name or len(name) < 3 or len(name) > 110:
         return False
 
-    if re.match(
-        r"^(?:\d+|\d{4}[-/]\d{1,2}|p\s*:|"
-        r"\+?94\d+|0\d{9})$",
-        name,
-        re.I
-    ):
+    # 1. Reject ISO & Written Text Dates
+    date_pattern = (
+        r"^(?:\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}|"
+        r"\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|"
+        r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\b)"
+    )
+    if re.search(date_pattern, name, re.I):
+        return False
+
+    # 2. Reject Phone numbers or numeric values
+    if re.match(r"^(?:\d+|\d{4}[-/]\d{1,2}|p\s*:|\+?94\d+|0\d{9})$", name, re.I):
+        return False
+
+    # 3. Reject Course identifiers, slugs, and system headers
+    norm_name = norm(name)
+    if norm_name.startswith(("hnd_", "degree_", "course_", "bsc_", "msc_", "diploma_")):
         return False
 
     invalid_names = {
-        "full_name",
-        "name",
-        "data_science",
-        "robotics_ai",
-        "electrical_electronic_engineering",
-        "computing",
-        "date"
+        "full_name", "name", "student_name", "customer_name", "applicant_name",
+        "data_science", "robotics_ai", "electrical_electronic_engineering",
+        "computing", "other_not_sure_yet", "date", "timestamp", "created_time",
+        "phone", "mobile", "email", "remarks", "feedback", "status", "moratuwa",
+        "colombo", "kandy", "galle", "jaffna", "kurunegala", "ratnapura"
     }
 
-    if norm(name) in invalid_names:
+    if norm_name in invalid_names:
         return False
 
-    if "@" in name or "http" in name.lower():
+    if "@" in name or "http" in name.lower() or "www." in name.lower():
         return False
 
     return any(char.isalpha() for char in name)
 
 
 def phone_text(value):
+    """Extract and validate clean phone numbers."""
     phone = as_text(value)
 
     if not phone or isinstance(value, datetime):
@@ -132,27 +153,27 @@ def phone_text(value):
 
 
 def find_feedback_column(original, category):
+    """Extract and aggregate feedback notes across columns."""
     values = []
 
+    feedback_keys = {
+        "customer_feedback", "feedback", "staff_feedback",
+        "follow_up_feedback", "remarks", "2nd_call_remarks",
+        "1st_call_status", "comments", "notes"
+    }
+
     for key, value in original.items():
-        if norm(key) in {
-            "customer_feedback",
-            "feedback",
-            "staff_feedback",
-            "follow_up_feedback",
-            "remarks"
-        }:
+        if norm(key) in feedback_keys:
             text = as_text(value)
-            if text:
+            if text and text not in values:
                 values.append(text)
 
-    # Unnamed feedback columns in source workbooks.
     if category == "business":
-        additional = ["Column H", "Column I"]
+        additional = ["Column H", "Column I", "Column G"]
     elif category == "broadband":
-        additional = ["Column G", "Column H"]
+        additional = ["Column G", "Column H", "Column F"]
     else:
-        additional = ["Unnamed: 11", "Column L"]
+        additional = ["Unnamed: 11", "Column L", "Column K", "Column J"]
 
     for key in additional:
         text = as_text(original.get(key, ""))
@@ -163,6 +184,7 @@ def find_feedback_column(original, category):
 
 
 def excel_col(col):
+    """Convert column number (1-based) to Excel letters."""
     letters = ""
     while col:
         col, remainder = divmod(col - 1, 26)
@@ -171,6 +193,7 @@ def excel_col(col):
 
 
 def get_rows(ws, category):
+    """Extract and parse all customer records from a worksheet."""
     stream = ws.iter_rows(values_only=True)
     initial = []
 
@@ -185,7 +208,6 @@ def get_rows(ws, category):
 
     header_row = scan_header(initial)
 
-    # Preserve original Excel header ordering.
     headers = []
     seen = Counter()
 
@@ -205,6 +227,9 @@ def get_rows(ws, category):
         chain(initial[header_row:], stream),
         header_row + 1
     ):
+        if not values or not any(values):
+            continue
+
         original = dict(
             zip(
                 headers,
@@ -212,22 +237,31 @@ def get_rows(ws, category):
             )
         )
 
-        # Extract Name
         name = first(
             original,
-            ["full_name", "student_name", "customer_name", "name", "Unnamed: 2"]
+            [
+                "full_name", "student_name", "customer_name", "name",
+                "applicant_name", "contact_person", "student", "customer"
+            ]
         )
 
         if not is_real_name(name):
-            continue
+            name = ""
+            for val in values:
+                text_val = as_text(val)
+                if is_real_name(text_val):
+                    name = text_val
+                    break
 
-        # Extract Phone
         raw_phone = first(
             original,
-            ["phone_number", "phone", "mobile", "contact_number", "Unnamed: 5", "p:+94740217617"]
+            [
+                "phone_number", "phone", "mobile", "mobile_number",
+                "contact_number", "contact_no", "telephone", "Unnamed: 5",
+                "p:+94740217617", "Column E", "Column F"
+            ]
         )
 
-        # CAIT sheet fallback for phone column
         if (
             not raw_phone
             and category == "education"
@@ -235,37 +269,56 @@ def get_rows(ws, category):
         ):
             raw_phone = as_text(values[4] if len(values) > 4 else "")
 
+        if not raw_phone:
+            for val in values:
+                p_cand = phone_text(val)
+                if p_cand:
+                    raw_phone = p_cand
+                    break
+
         phone = phone_text(raw_phone)
 
-        # Extract Email
         email = first(
             original,
-            ["email", "email_address", "Unnamed: 3"]
+            ["email", "email_address", "mail", "Unnamed: 3", "Column D"]
         )
 
         if not phone and not email:
             continue
+
+        if not name:
+            name = "Unknown Lead"
 
         feedback = find_feedback_column(original, category)
 
         if category == "education":
             extra = first(
                 original,
-                ["2nd Call Remarks", "2nd call round", "2nd Call Status", "1st Call Status"]
+                ["2nd Call Remarks", "2nd call round", "2nd Call Status", "1st Call Status", "Remarks"]
             )
             call = first(
                 original,
-                ["Call Status", "1st Call Status", "Not Answered"]
+                ["Call Status", "1st Call Status", "Not Answered", "Status"]
             )
         else:
             extra = ""
             call = ""
 
-        created_at = first(original, ["created_time"])
-        
-        # Capture explicit Potential Level (H / M / L) and Potential Course
-        potential_level = first(original, ["potential_level", "potential_level_10", "Unnamed: 10", "L"])
-        potential_course = first(original, ["potential_course", "uh_all", "which_degree_program_are_you_interested_in", "please_mention_which_degree_program_you_want_to_apply_for", "Unnamed: 9"])
+        created_at = first(original, ["created_time", "created_at", "date", "timestamp"])
+
+        potential_level = first(
+            original,
+            ["potential_level", "potential_level_10", "priority", "level", "Unnamed: 10", "L"]
+        )
+        potential_course = first(
+            original,
+            [
+                "potential_course", "uh_all", "degree",
+                "which_degree_program_are_you_interested_in",
+                "please_mention_which_degree_program_you_want_to_apply_for",
+                "course", "Unnamed: 9"
+            ]
+        )
 
         selected, score, reason, disposition = evaluate(
             category,
@@ -277,13 +330,13 @@ def get_rows(ws, category):
             potential_course=potential_course
         )
 
-        # Key for unique check
         key = re.sub(r"\D", "", phone) or email.lower()
 
         output.append({
             "original": original,
             "name": name,
             "phone": phone,
+            "email": email,
             "feedback": feedback,
             "sheet": ws.title,
             "row": row_number,
@@ -344,7 +397,6 @@ def analyze(content, category):
             "No recognized customer rows found. Check category and Excel headers."
         )
 
-    # Unique deduplication keeping highest priority score
     uniques = {}
 
     for record in all_rows:
@@ -370,10 +422,8 @@ def analyze(content, category):
             uniques[key] = record
 
     items = list(uniques.values())
-
     selected = [record for record in items if record["selected"]]
 
-    # Priority Sorting: Score Descending (High Priority First -> Lowest Last)
     selected.sort(key=lambda record: record["score"], reverse=True)
 
     return {
@@ -438,29 +488,22 @@ def build_export(result):
         ws.freeze_panes = "D2"
         ws.auto_filter.ref = ws.dimensions
 
-        # Header formatting
         for cell in ws[1]:
             cell.font = Font(color="FFFFFF", bold=True)
             cell.fill = PatternFill("solid", fgColor="163A5F")
             cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
 
         widths = {
-            1: 15,  # Priority Score
-            2: 30,  # Student / Customer Name
-            3: 22,  # Phone Number
-            4: 65,  # Why Top Lead?
-            5: 70,  # Original Feedback
-            6: 14   # Source Row
+            1: 15, 2: 30, 3: 22, 4: 65, 5: 70, 6: 14
         }
 
         for index, header in enumerate(headers, 1):
             width = widths.get(index, min(36, max(15, len(header) + 3)))
             ws.column_dimensions[excel_col(index)].width = width
 
-        # Data formatting
         for row in ws.iter_rows(min_row=2):
-            row[0].alignment = Alignment(horizontal="center", vertical="top") # Priority Score
-            row[2].number_format = "@" # Phone
+            row[0].alignment = Alignment(horizontal="center", vertical="top")
+            row[2].number_format = "@"
             row[3].alignment = Alignment(wrap_text=True, vertical="top")
             row[4].alignment = Alignment(wrap_text=True, vertical="top")
             ws.row_dimensions[row[0].row].height = 45
@@ -527,6 +570,17 @@ async def analyze_file(
         "excluded_rows": result["excluded_rows"],
         "warnings": result["warnings"],
         "rows": [
+            {
+                "sheet": record["sheet"],
+                "row": record["row"],
+                "score": record["score"],
+                "name": record["name"],
+                "phone": record["phone"],
+                "reason": record["reason"],
+                "original": record["original"]
+            }
+            for record in record_item if True # Fallback for safety
+        ] if False else [
             {
                 "sheet": record["sheet"],
                 "row": record["row"],
