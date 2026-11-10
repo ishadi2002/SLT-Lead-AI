@@ -269,6 +269,74 @@ class RulesTests(unittest.TestCase):
         self.assertFalse(selected)
         self.assertEqual(disp, 'Declined / Not Interested')
 
+    # --- Adjustments & Real Data Tests ---
+    def test_education_transcripts_is_warm_not_hot(self):
+        # Transcripts submitted is WARM (70), not HOT (90)
+        selected, score, reason, disp = evaluate(
+            'education',
+            'I already contacted and he sent me his transcripts ...Pending approval'
+        )
+        self.assertTrue(selected)
+        self.assertEqual(score, 70)
+        self.assertEqual(disp, 'Potential Lead')
+        self.assertIn('transcripts submitted', reason.lower())
+
+    def test_business_visit_is_warm_not_hot(self):
+        # "visit arranged" is WARM (70), not HOT (90)
+        selected, score, reason, disp = evaluate('business', 'visit arranged on 10th of July')
+        self.assertTrue(selected)
+        self.assertEqual(score, 70)
+        self.assertIn('site visit arranged', reason.lower())
+
+    def test_business_site_visit_arranged_warm(self):
+        selected, score, reason, disp = evaluate('business', 'site visit arranged')
+        self.assertTrue(selected)
+        self.assertEqual(score, 70)
+
+    def test_score_strictly_within_0_to_100_range(self):
+        # HOT lead (90) with Potential Level 'H' (+10) must be capped at 100
+        selected, score, reason, disp = evaluate('education', 'Sent details via whatsapp,Registered', potential_level='H')
+        self.assertTrue(selected)
+        self.assertEqual(score, 100)
+        self.assertLessEqual(score, 100)
+
+        # WARM lead (70) with Potential Level 'H' (+10) = 80
+        selected, score, reason, disp = evaluate('education', 'He will register for next batch', potential_level='H')
+        self.assertTrue(selected)
+        self.assertEqual(score, 80)
+        self.assertLessEqual(score, 100)
+
+        # HOT lead (90) with Potential Level 'L' (-5) = 85
+        selected, score, reason, disp = evaluate('business', 'Applied for an FFTH', potential_level='L')
+        self.assertTrue(selected)
+        self.assertEqual(score, 85)
+
+    def test_uh_2nd_call_remarks_priority_rejection(self):
+        # 2nd call remarks has 'rejected 09/04' which overrides earlier positive A/L Maths results
+        selected, score, reason, disp = evaluate(
+            'education',
+            'AL Maths pending results, father is looking thi for her daughter, req to send details via wtsp',
+            extra='rejected 09/04',
+            sheet_name='UH'
+        )
+        self.assertFalse(selected)
+        self.assertEqual(score, 0)
+        self.assertEqual(disp, 'Declined / Not Interested')
+        self.assertIn('2nd Call', reason)
+
+    def test_uh_2nd_call_remarks_priority_callback(self):
+        # 2nd call remarks has callback request
+        selected, score, reason, disp = evaluate(
+            'education',
+            'mobile switched off, sent details via wtsp',
+            extra='Answerd, Sanduni 09/11 .......call back later',
+            sheet_name='UH'
+        )
+        self.assertFalse(selected)
+        self.assertEqual(score, 35)
+        self.assertEqual(disp, 'Follow-up Required')
+        self.assertIn('2nd Call', reason)
+
 
 if __name__ == '__main__':
     unittest.main()

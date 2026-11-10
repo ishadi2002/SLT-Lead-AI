@@ -319,6 +319,10 @@ def get_rows(ws, category):
                 "potential_course", "uh_all", "degree",
                 "which_degree_program_are_you_interested_in",
                 "please_mention_which_degree_program_you_want_to_apply_for",
+                "what_programme_are_you_interested_in",
+                "which_british_degree_program_are_you_interested_in",
+                "what_programme_are_you_interested_in?",
+                "which_british_degree_program_are_you_interested_in?",
                 "course", "Unnamed: 9"
             ]
         )
@@ -465,6 +469,7 @@ def build_export(result):
             "Student / Customer Name",
             "Phone Number",
             "Why Top Lead?",
+            "Disposition",
             "Original Feedback",
             "Source Row"
         ]
@@ -478,6 +483,7 @@ def build_export(result):
                 item["name"],
                 item["phone"],
                 item["reason"],
+                item.get("disposition", "Potential Lead"),
                 item["feedback"],
                 item["row"]
             ]
@@ -498,7 +504,7 @@ def build_export(result):
             cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
 
         widths = {
-            1: 15, 2: 30, 3: 22, 4: 65, 5: 70, 6: 14
+            1: 15, 2: 30, 3: 22, 4: 65, 5: 25, 6: 70, 7: 14
         }
 
         for index, header in enumerate(headers, 1):
