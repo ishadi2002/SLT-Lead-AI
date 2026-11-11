@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   UploadCloud, Download, Search, GraduationCap, 
-  BriefcaseBusiness, Wifi, ShieldCheck, CheckCircle2, AlertTriangle 
+  BriefcaseBusiness, Wifi, ShieldCheck, CheckCircle2, AlertTriangle, Sparkles, Cpu
 } from 'lucide-react';
 
 const BASE = 'http://127.0.0.1:8000';
@@ -21,6 +21,15 @@ export default function App() {
   const [query, setQuery] = useState('');
   const [showOriginal, setShowOriginal] = useState(false);
   const [sheet, setSheet] = useState('all');
+  const [aiStatus, setAiStatus] = useState(null); // null | { ready, model, fallback }
+
+  // Check AI status on load
+  useEffect(() => {
+    fetch(`${BASE}/api/health`)
+      .then(r => r.json())
+      .then(d => setAiStatus(d.ai_engine || null))
+      .catch(() => setAiStatus(null));
+  }, []);
 
   const reset = () => {
     setFile(null);
@@ -76,6 +85,33 @@ export default function App() {
   });
 
   const columns = [...new Set(shown.flatMap((x) => Object.keys(x.original || {})))];
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function download() {
+    if (result) window.location.href = `${BASE}/api/export/${result.analysis_id}`;
+  }
+
+  const sheets = [...new Set((result?.rows || []).map((x) => x.sheet))];
+
+  const shown = (result?.rows || []).filter((row) => {
+    const sheetMatches = sheet === 'all' || row.sheet === sheet;
+    const searchTarget = [
+      row.name,
+      row.phone,
+      row.reason,
+      ...Object.values(row.original || {})
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return sheetMatches && searchTarget.includes(query.toLowerCase());
+  });
+
+  const columns = [...new Set(shown.flatMap((x) => Object.keys(x.original || {})))];
 
   return (
     <div className="page">
@@ -85,6 +121,15 @@ export default function App() {
           <strong>Lead Qualification</strong>
           <div className="subtle">Meta Campaign Lead Review</div>
         </div>
+        {/* AI Engine Status Badge */}
+        {aiStatus && (
+          <span className={`ai-badge ${aiStatus.ready ? 'ai-on' : 'ai-off'}`}>
+            {aiStatus.ready
+              ? <><Sparkles size={13}/> Gemini AI · {aiStatus.model}</>
+              : <><Cpu size={13}/> Rule Engine (set GEMINI_API_KEY)</>
+            }
+          </span>
+        )}
         <span className="topright">LOCAL ANALYSIS · NO EXTERNAL UPLOADS</span>
       </header>
 

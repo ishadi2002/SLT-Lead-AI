@@ -1,4 +1,4 @@
-"""SLT Excel Lead Qualification API - Priority Sorted Output."""
+"""SLT Excel Lead Qualification API - Powered by Gemini AI + Rule Fallback."""
 
 from collections import Counter
 from io import BytesIO
@@ -8,6 +8,17 @@ from typing import Annotated
 
 import re
 import uuid
+import os
+from pathlib import Path
+
+# ── Load .env before anything else ───────────────────────────────────────────
+_env_path = Path(__file__).resolve().parent.parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _, _v = _line.partition("=")
+            os.environ.setdefault(_k.strip(), _v.strip())
 
 from fastapi import (
     FastAPI, UploadFile, File, Form, HTTPException
@@ -20,9 +31,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.reader.excel import load_workbook
 
 import sys
-from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from engine import evaluate
+from engine import evaluate, _GEMINI_AVAILABLE, _get_model
 
 
 app = FastAPI(
@@ -613,9 +623,19 @@ def build_export(result):
 
 @app.get("/api/health")
 def health():
+    gemini_key_set = bool(os.environ.get("GEMINI_API_KEY", "").strip())
+    gemini_sdk_ok = _GEMINI_AVAILABLE
+    gemini_model_ok = _get_model() is not None
     return {
         "ok": True,
-        "categories": sorted(CATEGORIES)
+        "categories": sorted(CATEGORIES),
+        "ai_engine": {
+            "sdk_installed": gemini_sdk_ok,
+            "api_key_set": gemini_key_set,
+            "ready": gemini_model_ok,
+            "model": "gemini-2.0-flash" if gemini_model_ok else None,
+            "fallback": "rule-based engine active" if not gemini_model_ok else None,
+        }
     }
 
 

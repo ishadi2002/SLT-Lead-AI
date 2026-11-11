@@ -1,5 +1,7 @@
 node_modules/
 .venv/
+venv/
 __pycache__/
 *.xlsx
 .DS_Store
+.env
