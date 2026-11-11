@@ -19,6 +19,9 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.reader.excel import load_workbook
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from engine import evaluate
 
 
@@ -76,23 +79,42 @@ def first(record, names):
 
 
 def scan_header(rows):
-    """Scan first 20 rows to find header row index cleanly."""
+    """Scan first 20 rows to find header row index cleanly.
+
+    Handles dual-header sheets (e.g. UH sheet in Education workbook) by
+    preferring the row that contains 'full_name' or 'phone_number' over a
+    row that contains only a raw phone literal like 'p:+94740217617'.
+    """
+    best_rownum = None
+
     for rownum, row in enumerate(rows[:20], 1):
         cells = [norm(value) for value in row[:60] if value is not None]
 
-        # Ignore rows containing pure date values
+        # Ignore rows that are purely date banners  (e.g. ",,,,2026-03-10,,,,")
         has_date_headers = any(re.search(r'\d{1,2}(?:st|nd|rd|th)?_\w+_\d{4}', c) for c in cells if c)
         if has_date_headers:
             continue
 
+        # Ignore rows where most non-empty cells look like phone numbers with p: prefix
+        phone_like = sum(1 for c in cells if re.match(r'p_?\+?\d{7,}', c))
+        if phone_like >= 1 and len(cells) <= phone_like + 2:
+            continue
+
         if "full_name" in cells or "student_name" in cells or "customer_name" in cells or (
             any("name" in c for c in cells) and (
-                "email" in cells or "phone_number" in cells or "phone" in cells or "mobile" in cells or "contact" in cells
+                "email" in cells or "phone_number" in cells or "phone" in cells
+                or "mobile" in cells or "contact" in cells
             )
         ):
-            return rownum
+            # Prefer a row that has 'full_name' or 'phone_number' — these are
+            # the definitive real header rows; keep scanning in case a later
+            # row is even better (dual-header sheets have the real headers on
+            # the second header row).
+            if "full_name" in cells or "phone_number" in cells:
+                return rownum
+            best_rownum = rownum
 
-    return 1
+    return best_rownum if best_rownum is not None else 1
 
 
 def is_real_name(value):
@@ -121,11 +143,18 @@ def is_real_name(value):
         return False
 
     invalid_names = {
+        # Column / field header literals
         "full_name", "name", "student_name", "customer_name", "applicant_name",
         "data_science", "robotics_ai", "electrical_electronic_engineering",
         "computing", "other_not_sure_yet", "date", "timestamp", "created_time",
-        "phone", "mobile", "email", "remarks", "feedback", "status", "moratuwa",
-        "colombo", "kandy", "galle", "jaffna", "kurunegala", "ratnapura"
+        "phone", "mobile", "email", "remarks", "feedback", "status",
+        # SLT education centre names (Column A in CAIT/HND/UH sheets)
+        "welisara", "moratuwa", "colombo", "kandy", "galle", "jaffna",
+        "kurunegala", "ratnapura", "gampaha", "negombo", "matara", "badulla",
+        "anuradhapura", "matale", "nuwara eliya", "hambantota", "trincomalee",
+        "batticaloa", "ampara", "puttalam", "kegalle", "monaragala", "kalutara",
+        "panadura", "horana", "avissawella", "embilipitiya", "wennappuwa",
+        "center", "centre", "branch",
     }
 
     if norm_name in invalid_names:
@@ -138,16 +167,30 @@ def is_real_name(value):
 
 
 def phone_text(value):
-    """Extract and validate clean phone numbers."""
+    """Extract and validate clean phone numbers.
+
+    Handles:
+      - Plain numbers: 0771234567, +94771234567
+      - Agent-prefixed entries: "p:+94711375278", "p: 077 123 4567"
+      - Values already stripped of non-digits
+    """
     phone = as_text(value)
 
     if not phone or isinstance(value, datetime):
         return ""
 
+    # Strip the agent-written "p:" prefix (e.g. "p:+94711375278")
+    phone = re.sub(r"^p\s*:\s*", "", phone, flags=re.I).strip()
+
     digits = re.sub(r"\D", "", phone)
 
     if 9 <= len(digits) <= 13:
-        return phone
+        # Return normalised number: prefer +94 international format
+        if digits.startswith("94") and len(digits) >= 11:
+            return "+" + digits
+        if digits.startswith("0") and len(digits) == 10:
+            return digits
+        return digits
 
     return ""
 
@@ -253,30 +296,70 @@ def get_rows(ws, category):
                     name = text_val
                     break
 
+        # ── Phone extraction ──────────────────────────────────────────────────
+        # We try each method in order and stop as soon as phone_text() confirms
+        # the candidate is a valid phone number (9–13 digits).  We NEVER rely
+        # on `bool(raw_phone)` to gate later stages because a truthy but
+        # invalid value (e.g. a date string "2026-03-10") would block every
+        # fallback that follows it.
+
+        # Compile once outside the per-row fallback chain
+        PHONE_IN_TEXT = re.compile(r"p\s*:\s*(\+?(?:94|0)\d{9,10})", re.I)
+
+        phone = ""   # final validated phone – built up through the chain below
+
+        # 1. Standard labelled column aliases
         raw_phone = first(
             original,
             [
                 "phone_number", "phone", "mobile", "mobile_number",
                 "contact_number", "contact_no", "telephone", "Unnamed: 5",
-                "p:+94740217617", "Column E", "Column F"
+                "Column E", "Column F",
             ]
         )
+        phone = phone_text(raw_phone)
 
-        if (
-            not raw_phone
-            and category == "education"
-            and ws.title.strip().upper() == "CAIT"
-        ):
-            raw_phone = as_text(values[4] if len(values) > 4 else "")
+        # 2. Education-specific: column *header* is itself a phone literal
+        #    e.g. UH sheet row-1 has "p:+94740217617" as a header cell.
+        #    After norm() that becomes "p_94740217617" – match it.
+        if not phone and category == "education":
+            for key, val in original.items():
+                nk = norm(key)
+                if re.match(r"p_?\+?(?:94|07)\d{7,}", nk) or re.match(
+                    r"p\s*:\s*(?:\+94|0)\d+", key, re.I
+                ):
+                    cand = phone_text(val if val else key)
+                    if cand:
+                        phone = cand
+                        break
 
-        if not raw_phone:
+        # 3. CAIT positional fallback: column E (index 4) is the phone column
+        #    but its header is a blank space so it isn't caught by alias lookup.
+        #    Only accept if phone_text() validates it (guards against date rows).
+        if not phone and category == "education" and ws.title.strip().upper() == "CAIT":
+            phone = phone_text(values[4] if len(values) > 4 else "")
+
+        # 4. Generic value scan – check every cell in the row
+        if not phone:
             for val in values:
-                p_cand = phone_text(val)
-                if p_cand:
-                    raw_phone = p_cand
+                cand = phone_text(val)
+                if cand:
+                    phone = cand
                     break
 
-        phone = phone_text(raw_phone)
+        # 5. Last-resort: regex extraction from feedback / remarks text.
+        #    Agents embed phone numbers as "p:+94769798825" or "p:07..." inside
+        #    free-text feedback when they cannot populate the phone column.
+        if not phone:
+            feedback_text_for_phone = find_feedback_column(original, category)
+            # Also scan ALL raw cell values for the p: pattern
+            all_text = feedback_text_for_phone + " " + " ".join(
+                as_text(v) for v in values
+            )
+            m = PHONE_IN_TEXT.search(all_text)
+            if m:
+                phone = phone_text(m.group(1))
+        # ─────────────────────────────────────────────────────────────────────
 
         email = first(
             original,
@@ -465,7 +548,6 @@ def build_export(result):
         original_headers = group[0]["headers"]
 
         front_headers = [
-            "Priority Score",
             "Student / Customer Name",
             "Phone Number",
             "Why Top Lead?",
@@ -479,7 +561,6 @@ def build_export(result):
 
         for item in group:
             values = [
-                item["score"],
                 item["name"],
                 item["phone"],
                 item["reason"],
@@ -495,7 +576,7 @@ def build_export(result):
 
             ws.append([safe_excel_value(value) for value in values])
 
-        ws.freeze_panes = "D2"
+        ws.freeze_panes = "C2"
         ws.auto_filter.ref = ws.dimensions
 
         for cell in ws[1]:
@@ -504,7 +585,7 @@ def build_export(result):
             cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
 
         widths = {
-            1: 15, 2: 30, 3: 22, 4: 65, 5: 25, 6: 70, 7: 14
+            1: 30, 2: 22, 3: 65, 4: 25, 5: 70, 6: 14
         }
 
         for index, header in enumerate(headers, 1):
@@ -512,10 +593,10 @@ def build_export(result):
             ws.column_dimensions[excel_col(index)].width = width
 
         for row in ws.iter_rows(min_row=2):
-            row[0].alignment = Alignment(horizontal="center", vertical="top")
-            row[2].number_format = "@"
+            row[0].alignment = Alignment(wrap_text=True, vertical="top")
+            row[1].number_format = "@"
+            row[2].alignment = Alignment(wrap_text=True, vertical="top")
             row[3].alignment = Alignment(wrap_text=True, vertical="top")
-            row[4].alignment = Alignment(wrap_text=True, vertical="top")
             ws.row_dimensions[row[0].row].height = 45
 
     if not grouped:

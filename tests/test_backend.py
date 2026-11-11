@@ -1,4 +1,5 @@
 import unittest
+import re
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -53,9 +54,17 @@ class BackendHelpersTests(unittest.TestCase):
         self.assertFalse(is_real_name("info@slt.lk"))
 
     def test_phone_text(self):
+        # Plain 10-digit local number — returned as-is
         self.assertEqual(phone_text("0712345678"), "0712345678")
-        self.assertEqual(phone_text("+94 77 123 4567"), "+94 77 123 4567")
-        self.assertEqual(phone_text("1234"), "")  # too short
+        # International format with spaces → normalised to +94... digits
+        result = phone_text("+94 77 123 4567")
+        self.assertTrue(result.startswith("+94"), f"Expected +94..., got {result!r}")
+        self.assertEqual(len(re.sub(r"\D", "", result)), 11)
+        # p: prefix stripped → valid number extracted
+        self.assertNotEqual(phone_text("p:+94711375278"), "")
+        self.assertNotEqual(phone_text("p:0771234567"), "")
+        # Too short — rejected
+        self.assertEqual(phone_text("1234"), "")
         self.assertEqual(phone_text(""), "")
 
     def test_find_feedback_column(self):
